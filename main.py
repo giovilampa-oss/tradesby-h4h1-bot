@@ -43,6 +43,9 @@ ASSETS = {
     "EUR/USD": "EURUSD=X"
 }
 
+# Memoria per evitare notifiche doppie
+last_signals = {}
+
 # --- STRATEGIA TRADESBY (H4 / H1) ---
 def check_tradesby_strategy():
     for name, symbol in ASSETS.items():
@@ -61,50 +64,64 @@ def check_tradesby_strategy():
                 'Close': 'last'
             }).dropna()
 
-            # 1. Definizione della No Trade Zone (High e Low H4 recenti)
+            # 1. Definizione della No Trade Zone H4 (Range H4 precedente)
             h4_high = df_4h['High'].iloc[-2]
             h4_low = df_4h['Low'].iloc[-2]
 
-            # 2. Verifica Chiusura Candela H1
-            last_h1_close = round(df_h1['Close'].iloc[-1], 2)
-            last_h1_low = round(df_h1['Low'].iloc[-1], 2)
-            last_h1_high = round(df_h1['High'].iloc[-1], 2)
+            # 2. Ultima Candela H1 Chiusa
+            last_h1_time = str(df_h1.index[-1])
+            last_h1_close = df_h1['Close'].iloc[-1]
 
-            # --- SEGNALE BUY (Chiusura H1 SOPRA la No Trade Zone H4) ---
+            # Formattazione decimali (4 per Forex, 2 per altri)
+            decimals = 4 if "EURUSD" in symbol else 2
+
+            # --- SEGNALE BUY (Chiusura H1 SOPRA il Massimo H4) ---
             if last_h1_close > h4_high:
-                entry = last_h1_close
-                sl = round(last_h1_low, 2)
-                tp = round(entry + ((entry - sl) * 2), 2)  # RR 1:2
+                signal_key = f"{name}_BUY_{last_h1_time}"
+                if last_signals.get(name) != signal_key:
+                    last_signals[name] = signal_key
 
-                msg = (
-                    f"🚀 *{name} - SEGNALE BUY (STRATEGIA H4/H1)*\n"
-                    f"-----------------------------------------\n"
-                    f"📌 *Setup:* Chiusura H1 fuori dalla No Trade Zone H4\n"
-                    f"🧱 *No Trade Zone H4:* {round(h4_low, 2)} - {round(h4_high, 2)}\n"
-                    f"🎯 *Entry:* {entry}\n"
-                    f"🛑 *Stop Loss:* {sl}\n"
-                    f"✅ *Take Profit:* {tp} (RR 1:2)\n"
-                    f"-----------------------------------------"
-                )
-                send_telegram_message(msg)
+                    entry = round(last_h1_close, decimals)
+                    # SL posto SOTTO la No Trade Zone H4 (con piccolo buffer dello 0.1%)
+                    sl = round(h4_low * 0.999, decimals)
+                    risk = entry - sl
+                    tp = round(entry + (risk * 2), decimals)  # Take Profit RR 1:2
 
-            # --- SEGNALE SELL (Chiusura H1 SOTTO la No Trade Zone H4) ---
+                    msg = (
+                        f"🚀 *{name} - SEGNALE BUY (STRATEGIA H4/H1)*\n"
+                        f"-----------------------------------------\n"
+                        f"📌 *Setup:* Chiusura H1 sopra la No Trade Zone H4\n"
+                        f"🧱 *No Trade Zone H4:* {round(h4_low, decimals)} - {round(h4_high, decimals)}\n"
+                        f"🎯 *Entry:* {entry}\n"
+                        f"🛑 *Stop Loss:* {sl} (Sotto Minimo H4)\n"
+                        f"✅ *Take Profit:* {tp} (RR 1:2)\n"
+                        f"-----------------------------------------"
+                    )
+                    send_telegram_message(msg)
+
+            # --- SEGNALE SELL (Chiusura H1 SOTTO il Minimo H4) ---
             elif last_h1_close < h4_low:
-                entry = last_h1_close
-                sl = round(last_h1_high, 2)
-                tp = round(entry - ((sl - entry) * 2), 2)  # RR 1:2
+                signal_key = f"{name}_SELL_{last_h1_time}"
+                if last_signals.get(name) != signal_key:
+                    last_signals[name] = signal_key
 
-                msg = (
-                    f"🔻 *{name} - SEGNALE SELL (STRATEGIA H4/H1)*\n"
-                    f"-----------------------------------------\n"
-                    f"📌 *Setup:* Chiusura H1 fuori dalla No Trade Zone H4\n"
-                    f"🧱 *No Trade Zone H4:* {round(h4_low, 2)} - {round(h4_high, 2)}\n"
-                    f"🎯 *Entry:* {entry}\n"
-                    f"🛑 *Stop Loss:* {sl}\n"
-                    f"✅ *Take Profit:* {tp} (RR 1:2)\n"
-                    f"-----------------------------------------"
-                )
-                send_telegram_message(msg)
+                    entry = round(last_h1_close, decimals)
+                    # SL posto SOPRA la No Trade Zone H4 (con piccolo buffer dello 0.1%)
+                    sl = round(h4_high * 1.001, decimals)
+                    risk = sl - entry
+                    tp = round(entry - (risk * 2), decimals)  # Take Profit RR 1:2
+
+                    msg = (
+                        f"🔻 *{name} - SEGNALE SELL (STRATEGIA H4/H1)*\n"
+                        f"-----------------------------------------\n"
+                        f"📌 *Setup:* Chiusura H1 sotto la No Trade Zone H4\n"
+                        f"🧱 *No Trade Zone H4:* {round(h4_low, decimals)} - {round(h4_high, decimals)}\n"
+                        f"🎯 *Entry:* {entry}\n"
+                        f"🛑 *Stop Loss:* {sl} (Sopra Massimo H4)\n"
+                        f"✅ *Take Profit:* {tp} (RR 1:2)\n"
+                        f"-----------------------------------------"
+                    )
+                    send_telegram_message(msg)
 
         except Exception as e:
             print(f"Errore durante la scansione di {name}: {e}")
@@ -115,7 +132,7 @@ if __name__ == "__main__":
     t.start()
 
     print("🤖 Bot Tradesby H4/H1 Avviato...")
-    send_telegram_message("🤖 *Bot Tradesby (H4/H1) Attivo!* In ascolto per Oro, Cripto, Indici e Forex...")
+    send_telegram_message("🤖 *Bot Tradesby (H4/H1) Aggiornato con SL Strutturale!*")
 
     while True:
         try:
