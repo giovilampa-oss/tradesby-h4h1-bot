@@ -1,8 +1,7 @@
 import os
 import time
 import requests
-import pandas as pd
-import yfinance as yf
+import schedule
 from flask import Flask
 from threading import Thread
 
@@ -11,133 +10,126 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot Tradesby H4/H1 - WebService Attivo!"
+    return "Bot Tradesby H4/H1 (Twelve Data) - Attivo!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- CONFIGURAZIONE TELEGRAM ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "INSERISCI_TUO_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "INSERISCI_TUO_CHAT_ID")
+# --- CONFIGURAZIONE ---
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TWELVE_DATA_KEY = os.environ.get("TWELVE_DATA_KEY")
+
+ASSETS = [
+    {"name": "BITCOIN (BTC/USD)", "symbol": "BTC/USD", "decimals": 2},
+    {"name": "GOLD (XAU/USD)", "symbol": "XAU/USD", "decimals": 2},
+    {"name": "EUR/USD", "symbol": "EUR/USD", "decimals": 5}
+]
+
+last_signals = {}
 
 def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Errore: Credenziali Telegram mancanti.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload)
     except Exception as e:
         print(f"Errore invio Telegram: {e}")
 
-# --- STRUMENTI DA TRACCIARE ---
-ASSETS = {
-    "GOLD (XAU/USD)": "GC=F",
-    "BITCOIN (BTC/USD)": "BTC-USD",
-    "ETHEREUM (ETH/USD)": "ETH-USD",
-    "NASDAQ 100": "NQ=F",
-    "S&P 500": "ES=F",
-    "EUR/USD": "EURUSD=X"
-}
+def get_candles(symbol, interval, outputsize=10):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_KEY}"
+    try:
+        response = requests.get(url).json()
+        if "values" in response:
+            return response["values"]
+        else:
+            print(f"Errore API per {symbol}: {response}")
+    except Exception as e:
+        print(f"Errore connessione Twelve Data per {symbol}: {e}")
+    return None
 
-# Memoria per evitare notifiche doppie
-last_signals = {}
+def check_strategy():
+    print("Avvio analisi di mercato Real-Time con Twelve Data...")
+    for asset in ASSETS:
+        name = asset["name"]
+        symbol = asset["symbol"]
+        decimals = asset["decimals"]
 
-# --- STRATEGIA TRADESBY (H4 / H1) ---
-def check_tradesby_strategy():
-    for name, symbol in ASSETS.items():
-        try:
-            ticker = yf.Ticker(symbol)
-            
-            df_h1 = ticker.history(period="10d", interval="1h")
-            if df_h1.empty or len(df_h1) < 20:
-                continue
+        h4_data = get_candles(symbol, "4h", outputsize=5)
+        h1_data = get_candles(symbol, "1h", outputsize=5)
 
-            # Creiamo le candele a 4 Ore (H4)
-            df_4h = df_h1.resample('4h').agg({
-                'Open': 'first',
-                'High': 'max',
-                'Low': 'min',
-                'Close': 'last'
-            }).dropna()
+        if not h4_data or not h1_data:
+            continue
 
-            # 1. Definizione della No Trade Zone H4 (Range H4 precedente)
-            h4_high = df_4h['High'].iloc[-2]
-            h4_low = df_4h['Low'].iloc[-2]
+        prev_h4 = h4_data[1]
+        h4_high = float(prev_h4["high"])
+        h4_low = float(prev_h4["low"])
 
-            # 2. Ultima Candela H1 Chiusa
-            last_h1_time = str(df_h1.index[-1])
-            last_h1_close = df_h1['Close'].iloc[-1]
+        prev_h1 = h1_data[1]
+        last_h1_close = float(prev_h1["close"])
+        last_h1_time = prev_h1["datetime"]
 
-            # Formattazione decimali (4 per Forex, 2 per altri)
-            decimals = 4 if "EURUSD" in symbol else 2
+        # SEGNALE BUY
+        if last_h1_close > h4_high:
+            signal_key = f"{name}_BUY_{last_h1_time}"
+            if last_signals.get(name) != signal_key:
+                last_signals[name] = signal_key
 
-            # --- SEGNALE BUY (Chiusura H1 SOPRA il Massimo H4) ---
-            if last_h1_close > h4_high:
-                signal_key = f"{name}_BUY_{last_h1_time}"
-                if last_signals.get(name) != signal_key:
-                    last_signals[name] = signal_key
+                entry = round(last_h1_close, decimals)
+                sl = round(h4_low, decimals)
+                risk = entry - sl
+                tp = round(entry + (risk * 2), decimals)
 
-                    entry = round(last_h1_close, decimals)
-                    # SL posto SOTTO la No Trade Zone H4 (con piccolo buffer dello 0.1%)
-                    sl = round(h4_low * 0.999, decimals)
-                    risk = entry - sl
-                    tp = round(entry + (risk * 2), decimals)  # Take Profit RR 1:2
+                msg = (
+                    f"🚀 *{name} - SEGNALE BUY (REAL-TIME)*\n"
+                    f"-----------------------------------------\n"
+                    f"📌 *Setup:* Chiusura H1 sopra la No Trade Zone H4\n"
+                    f"🧱 *No Trade Zone H4:* {round(h4_low, decimals)} - {round(h4_high, decimals)}\n"
+                    f"🎯 *Entry:* {entry}\n"
+                    f"🛑 *Stop Loss:* {sl} (Minimo H4)\n"
+                    f"✅ *Take Profit:* {tp} (RR 1:2)\n"
+                    f"-----------------------------------------"
+                )
+                send_telegram_message(msg)
 
-                    msg = (
-                        f"🚀 *{name} - SEGNALE BUY (STRATEGIA H4/H1)*\n"
-                        f"-----------------------------------------\n"
-                        f"📌 *Setup:* Chiusura H1 sopra la No Trade Zone H4\n"
-                        f"🧱 *No Trade Zone H4:* {round(h4_low, decimals)} - {round(h4_high, decimals)}\n"
-                        f"🎯 *Entry:* {entry}\n"
-                        f"🛑 *Stop Loss:* {sl} (Sotto Minimo H4)\n"
-                        f"✅ *Take Profit:* {tp} (RR 1:2)\n"
-                        f"-----------------------------------------"
-                    )
-                    send_telegram_message(msg)
+        # SEGNALE SELL
+        elif last_h1_close < h4_low:
+            signal_key = f"{name}_SELL_{last_h1_time}"
+            if last_signals.get(name) != signal_key:
+                last_signals[name] = signal_key
 
-            # --- SEGNALE SELL (Chiusura H1 SOTTO il Minimo H4) ---
-            elif last_h1_close < h4_low:
-                signal_key = f"{name}_SELL_{last_h1_time}"
-                if last_signals.get(name) != signal_key:
-                    last_signals[name] = signal_key
+                entry = round(last_h1_close, decimals)
+                sl = round(h4_high, decimals)
+                risk = sl - entry
+                tp = round(entry - (risk * 2), decimals)
 
-                    entry = round(last_h1_close, decimals)
-                    # SL posto SOPRA la No Trade Zone H4 (con piccolo buffer dello 0.1%)
-                    sl = round(h4_high * 1.001, decimals)
-                    risk = sl - entry
-                    tp = round(entry - (risk * 2), decimals)  # Take Profit RR 1:2
+                msg = (
+                    f"🔻 *{name} - SEGNALE SELL (REAL-TIME)*\n"
+                    f"-----------------------------------------\n"
+                    f"📌 *Setup:* Chiusura H1 sotto la No Trade Zone H4\n"
+                    f"🧱 *No Trade Zone H4:* {round(h4_low, decimals)} - {round(h4_high, decimals)}\n"
+                    f"🎯 *Entry:* {entry}\n"
+                    f"🛑 *Stop Loss:* {sl} (Massimo H4)\n"
+                    f"✅ *Take Profit:* {tp} (RR 1:2)\n"
+                    f"-----------------------------------------"
+                )
+                send_telegram_message(msg)
 
-                    msg = (
-                        f"🔻 *{name} - SEGNALE SELL (STRATEGIA H4/H1)*\n"
-                        f"-----------------------------------------\n"
-                        f"📌 *Setup:* Chiusura H1 sotto la No Trade Zone H4\n"
-                        f"🧱 *No Trade Zone H4:* {round(h4_low, decimals)} - {round(h4_high, decimals)}\n"
-                        f"🎯 *Entry:* {entry}\n"
-                        f"🛑 *Stop Loss:* {sl} (Sopra Massimo H4)\n"
-                        f"✅ *Take Profit:* {tp} (RR 1:2)\n"
-                        f"-----------------------------------------"
-                    )
-                    send_telegram_message(msg)
+schedule.every(15).minutes.do(check_strategy)
 
-        except Exception as e:
-            print(f"Errore durante la scansione di {name}: {e}")
-
-# --- CICLO DI ESECUZIONE ---
 if __name__ == "__main__":
-    t = Thread(target=run_flask)
-    t.start()
+    # Avvia Flask in background
+    server_thread = Thread(target=run_flask)
+    server_thread.daemon = True
+    server_thread.start()
 
-    print("🤖 Bot Tradesby H4/H1 Avviato...")
-    send_telegram_message("🤖 *Bot Tradesby (H4/H1) Aggiornato con SL Strutturale!*")
+    send_telegram_message("🤖 *Bot Tradesby Aggiornato a Twelve Data Real-Time!*")
+    check_strategy()
 
     while True:
-        try:
-            check_tradesby_strategy()
-            time.sleep(900)
-        except Exception as e:
-            print(f"Errore ciclo principale: {e}")
-            time.sleep(600)
+        schedule.run_pending()
+        time.sleep(1)
