@@ -1,5 +1,3 @@
 flask
-python-telegram-bot==13.7
-yfinance
-pandas
 requests
+schedule
