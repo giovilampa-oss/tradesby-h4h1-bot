@@ -1,135 +1,280 @@
 import os
 import time
+import datetime
+import pytz
 import requests
-import schedule
-from flask import Flask
 from threading import Thread
+from flask import Flask
 
-# --- FLASK WEBSERVER (Per mantenere attivo Render) ---
+# --------------------------------------------------
+# CONFIGURAZIONE FLASK (Keep-alive per Render)
+# --------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot Tradesby H4/H1 (Twelve Data) - Attivo!"
+    return "TradesBy H4/H1 Ultimate Multi-Asset Bot PRO is running live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- CONFIGURAZIONE ---
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-TWELVE_DATA_KEY = os.environ.get("TWELVE_DATA_KEY")
+# --------------------------------------------------
+# CONFIGURAZIONE BOT TELEGRAM E TWELVE DATA
+# --------------------------------------------------
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or os.environ.get("TELEGRAM_TOKEN") or "8985062147:AAFnXAe9zk70k6sji3vo..."
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID") or "8665047525"
+TWELVE_DATA_KEY = os.environ.get("TWELVE_DATA_KEY") or "fa500c91581d4b4685dd1040f541ac8e"
 
+TIMEFRAME = "1h"
+CHECK_INTERVAL = 300       # Controllo ogni 5 minuti
+
+# LISTA COMPLETA DEGLI ASSET (GOLD + INDICI USA + CRYPTO + FX)
 ASSETS = [
-    {"name": "BITCOIN (BTC/USD)", "symbol": "BTC/USD", "decimals": 2},
-    {"name": "GOLD (XAU/USD)", "symbol": "XAU/USD", "decimals": 2},
-    {"name": "EUR/USD", "symbol": "EUR/USD", "decimals": 5}
+    # Top Priority - ORO & INDICI USA
+    {"name": "GOLD (XAU/USD)", "symbol": "XAU/USD", "decimals": 2, "rr": 2.5, "atr_mult": 1.2},
+    {"name": "NASDAQ 100", "symbol": "NDX", "decimals": 1, "rr": 2.5, "atr_mult": 1.3},
+    {"name": "S&P 500", "symbol": "SPX", "decimals": 1, "rr": 2.0, "atr_mult": 1.2},
+    {"name": "DOW JONES", "symbol": "DJI", "decimals": 1, "rr": 2.0, "atr_mult": 1.2},
+    
+    # Cripto & Forex
+    {"name": "BITCOIN", "symbol": "BTC/USD", "decimals": 2, "rr": 2.0, "atr_mult": 1.5},
+    {"name": "EUR/USD", "symbol": "EUR/USD", "decimals": 5, "rr": 2.0, "atr_mult": 1.0}
 ]
 
 last_signals = {}
+active_trades = []
 
+# --------------------------------------------------
+# FUNZIONI DI SUPPORTO
+# --------------------------------------------------
 def send_telegram_message(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Errore: Credenziali Telegram mancanti.")
-        return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
     try:
-        requests.post(url, json=payload)
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"Errore invio Telegram: {e}")
 
-def get_candles(symbol, interval, outputsize=10):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_KEY}"
+def get_market_data(symbol):
+    """Recupera candele H1, ATR e EMA 200 per uno specifico simbolo"""
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={TIMEFRAME}&outputsize=250&apikey={TWELVE_DATA_KEY}&indicators=atr(timeperiod=14),ema(timeperiod=200)"
     try:
-        response = requests.get(url).json()
-        if "values" in response:
-            return response["values"]
-        else:
-            print(f"Errore API per {symbol}: {response}")
+        res = requests.get(url, timeout=10).json()
+        if "values" in res:
+            data = res["values"]
+            data.reverse()
+            return data
     except Exception as e:
-        print(f"Errore connessione Twelve Data per {symbol}: {e}")
+        print(f"Errore Twelve Data su {symbol}: {e}")
     return None
 
-def check_strategy():
-    print("Avvio analisi di mercato Real-Time con Twelve Data...")
-    for asset in ASSETS:
-        name = asset["name"]
-        symbol = asset["symbol"]
-        decimals = asset["decimals"]
+# --------------------------------------------------
+# THREAD: MONITORAGGIO WIN / LOSS / BREAK-EVEN
+# --------------------------------------------------
+def monitor_active_trades():
+    global active_trades
+    while True:
+        try:
+            if active_trades:
+                trades_to_remove = []
+                for trade in active_trades:
+                    candles = get_market_data(trade['symbol'])
+                    if not candles or len(candles) == 0:
+                        continue
 
-        h4_data = get_candles(symbol, "4h", outputsize=5)
-        h1_data = get_candles(symbol, "1h", outputsize=5)
+                    current_price = float(candles[-1]['close'])
+                    decimals = trade['decimals']
 
-        if not h4_data or not h1_data:
-            continue
+                    # LONG
+                    if trade['type'] == 'LONG':
+                        if not trade['be_notified'] and current_price >= (trade['entry'] + trade['risk']):
+                            send_telegram_message(
+                                f"🛡️ **TRADESBY - BREAK-EVEN ({trade['name']})**\n\n"
+                                f"Il prezzo ha raggiunto +1R (`{round(current_price, decimals)}`)!\n"
+                                f"💡 **Azione:** Sposta lo Stop Loss a B/E (`{round(trade['entry'], decimals)}`)."
+                            )
+                            trade['be_notified'] = True
 
-        prev_h4 = h4_data[1]
-        h4_high = float(prev_h4["high"])
-        h4_low = float(prev_h4["low"])
+                        if current_price >= trade['tp']:
+                            send_telegram_message(
+                                f"🚀 **TRADESBY - TAKE PROFIT! (WIN)** 🎉\n\n"
+                                f"🌐 **Asset:** {trade['name']}\n"
+                                f"📊 **Tipo:** LONG Swing\n"
+                                f"🎯 **Target Raggiunto:** `{round(trade['tp'], decimals)}`"
+                            )
+                            trades_to_remove.append(trade)
 
-        prev_h1 = h1_data[1]
-        last_h1_close = float(prev_h1["close"])
-        last_h1_time = prev_h1["datetime"]
+                        elif current_price <= trade['sl']:
+                            send_telegram_message(
+                                f"🛑 **TRADESBY - STOP LOSS** 🛑\n\n"
+                                f"🌐 **Asset:** {trade['name']}\n"
+                                f"🛑 **Prezzo Uscita:** `{round(trade['sl'], decimals)}`"
+                            )
+                            trades_to_remove.append(trade)
 
-        # SEGNALE BUY
-        if last_h1_close > h4_high:
-            signal_key = f"{name}_BUY_{last_h1_time}"
-            if last_signals.get(name) != signal_key:
-                last_signals[name] = signal_key
+                    # SHORT
+                    elif trade['type'] == 'SHORT':
+                        if not trade['be_notified'] and current_price <= (trade['entry'] - trade['risk']):
+                            send_telegram_message(
+                                f"🛡️ **TRADESBY - BREAK-EVEN ({trade['name']})**\n\n"
+                                f"Il prezzo ha raggiunto +1R (`{round(current_price, decimals)}`)!\n"
+                                f"💡 **Azione:** Sposta lo Stop Loss a B/E (`{round(trade['entry'], decimals)}`)."
+                            )
+                            trade['be_notified'] = True
 
-                entry = round(last_h1_close, decimals)
-                sl = round(h4_low, decimals)
-                risk = entry - sl
-                tp = round(entry + (risk * 2), decimals)
+                        if current_price <= trade['tp']:
+                            send_telegram_message(
+                                f"🚀 **TRADESBY - TAKE PROFIT! (WIN)** 🎉\n\n"
+                                f"🌐 **Asset:** {trade['name']}\n"
+                                f"📊 **Tipo:** SHORT Swing\n"
+                                f"🎯 **Target Raggiunto:** `{round(trade['tp'], decimals)}`"
+                            )
+                            trades_to_remove.append(trade)
 
-                msg = (
-                    f"🚀 *{name} - SEGNALE BUY (REAL-TIME)*\n"
-                    f"-----------------------------------------\n"
-                    f"📌 *Setup:* Chiusura H1 sopra la No Trade Zone H4\n"
-                    f"🧱 *No Trade Zone H4:* {round(h4_low, decimals)} - {round(h4_high, decimals)}\n"
-                    f"🎯 *Entry:* {entry}\n"
-                    f"🛑 *Stop Loss:* {sl} (Minimo H4)\n"
-                    f"✅ *Take Profit:* {tp} (RR 1:2)\n"
-                    f"-----------------------------------------"
-                )
-                send_telegram_message(msg)
+                        elif current_price >= trade['sl']:
+                            send_telegram_message(
+                                f"🛑 **TRADESBY - STOP LOSS** 🛑\n\n"
+                                f"🌐 **Asset:** {trade['name']}\n"
+                                f"🛑 **Prezzo Uscita:** `{round(trade['sl'], decimals)}`"
+                            )
+                            trades_to_remove.append(trade)
 
-        # SEGNALE SELL
-        elif last_h1_close < h4_low:
-            signal_key = f"{name}_SELL_{last_h1_time}"
-            if last_signals.get(name) != signal_key:
-                last_signals[name] = signal_key
+                for t in trades_to_remove:
+                    if t in active_trades:
+                        active_trades.remove(t)
 
-                entry = round(last_h1_close, decimals)
-                sl = round(h4_high, decimals)
-                risk = sl - entry
-                tp = round(entry - (risk * 2), decimals)
+        except Exception as e:
+            print(f"Errore monitoraggio: {e}")
 
-                msg = (
-                    f"🔻 *{name} - SEGNALE SELL (REAL-TIME)*\n"
-                    f"-----------------------------------------\n"
-                    f"📌 *Setup:* Chiusura H1 sotto la No Trade Zone H4\n"
-                    f"🧱 *No Trade Zone H4:* {round(h4_low, decimals)} - {round(h4_high, decimals)}\n"
-                    f"🎯 *Entry:* {entry}\n"
-                    f"🛑 *Stop Loss:* {sl} (Massimo H4)\n"
-                    f"✅ *Take Profit:* {tp} (RR 1:2)\n"
-                    f"-----------------------------------------"
-                )
-                send_telegram_message(msg)
+        time.sleep(30)
 
-schedule.every(15).minutes.do(check_strategy)
+# --------------------------------------------------
+# LOGICA DI TRADING: SWING CONTINUATION
+# --------------------------------------------------
+def analyze_asset(asset):
+    global last_signals, active_trades
 
-if __name__ == "__main__":
-    # Avvia Flask in background
-    server_thread = Thread(target=run_flask)
-    server_thread.daemon = True
-    server_thread.start()
+    symbol = asset['symbol']
+    name = asset['name']
+    decimals = asset['decimals']
+    rr_target = asset['rr']
+    atr_mult = asset['atr_mult']
 
-    send_telegram_message("🤖 *Bot Tradesby Aggiornato a Twelve Data Real-Time!*")
-    check_strategy()
+    candles = get_market_data(symbol)
+    if not candles or len(candles) < 20:
+        return
+
+    last_candle = candles[-2]
+    prev_candles = candles[-12:-2]
+
+    time_str = last_candle['datetime']
+    if last_signals.get(symbol) == time_str:
+        return
+
+    try:
+        dt_utc = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=pytz.utc)
+        rome_tz = pytz.timezone("Europe/Rome")
+        formatted_time = dt_utc.astimezone(rome_tz).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        formatted_time = time_str
+
+    close_p = float(last_candle['close'])
+    high_p = float(last_candle['high'])
+    low_p = float(last_candle['low'])
+    open_p = float(last_candle['open'])
+
+    ema_200 = float(last_candle.get('ema', close_p))
+    atr = float(last_candle.get('atr', 2.0))
+
+    recent_high = max(float(c['high']) for c in prev_candles)
+    recent_low = min(float(c['low']) for c in prev_candles)
+
+    # SWING BUY
+    if close_p > recent_high and close_p > ema_200 and close_p > open_p:
+        last_signals[symbol] = time_str
+        
+        sl = round(low_p - (atr_mult * atr), decimals)
+        risk = round(close_p - sl, decimals)
+        tp = round(close_p + (risk * rr_target), decimals)
+
+        active_trades.append({
+            'name': name,
+            'symbol': symbol,
+            'type': 'LONG',
+            'entry': close_p,
+            'sl': sl,
+            'tp': tp,
+            'risk': risk,
+            'decimals': decimals,
+            'be_notified': False
+        })
+
+        msg = (
+            f"📊 **TRADESBY PRO - SEGNALE BUY ({name})** 📊\n\n"
+            f"📈 **Struttura:** Breakout Continuation H1\n"
+            f"💵 **Prezzo Entrata:** `{round(close_p, decimals)}`\n"
+            f"🛑 **Stop Loss:** `{sl}`\n"
+            f"🎯 **Take Profit (1:{rr_target}):** `{tp}`\n"
+            f"⏰ **Orario:** {formatted_time}"
+        )
+        send_telegram_message(msg)
+        return
+
+    # SWING SELL
+    if close_p < recent_low and close_p < ema_200 and close_p < open_p:
+        last_signals[symbol] = time_str
+        
+        sl = round(high_p + (atr_mult * atr), decimals)
+        risk = round(sl - close_p, decimals)
+        tp = round(close_p - (risk * rr_target), decimals)
+
+        active_trades.append({
+            'name': name,
+            'symbol': symbol,
+            'type': 'SHORT',
+            'entry': close_p,
+            'sl': sl,
+            'tp': tp,
+            'risk': risk,
+            'decimals': decimals,
+            'be_notified': False
+        })
+
+        msg = (
+            f"📊 **TRADESBY PRO - SEGNALE SELL ({name})** 📊\n\n"
+            f"📉 **Struttura:** Breakout Continuation H1\n"
+            f"💵 **Prezzo Entrata:** `{round(close_p, decimals)}`\n"
+            f"🛑 **Stop Loss:** `{sl}`\n"
+            f"🎯 **Take Profit (1:{rr_target}):** `{tp}`\n"
+            f"⏰ **Orario:** {formatted_time}"
+        )
+        send_telegram_message(msg)
+        return
+
+# --------------------------------------------------
+# MAIN LOOP
+# --------------------------------------------------
+if __name__ == '__main__':
+    t_flask = Thread(target=run_flask)
+    t_flask.daemon = True
+    t_flask.start()
+
+    t_monitor = Thread(target=monitor_active_trades)
+    t_monitor.daemon = True
+    t_monitor.start()
+
+    send_telegram_message("📊 TradesBy Ultimate Bot PRO (Gold + US Indices + BTC + FX) Avviato! 🚀")
 
     while True:
-        schedule.run_pending()
-        time.sleep(1)
+        try:
+            for asset in ASSETS:
+                analyze_asset(asset)
+                time.sleep(2)  # Pausa di 2 secondi tra gli asset per rispettare le API
+        except Exception as e:
+            print(f"Errore esecuzione: {e}")
+        time.sleep(CHECK_INTERVAL)
