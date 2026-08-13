@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "TradesBy H4/H1 Ultimate Multi-Asset Bot PRO is running live!"
+  return "TradesBy H4/H1 Ultimate Multi-Asset Bot PRO is running live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
