@@ -4,16 +4,17 @@ import os
 from threading import Thread
 from flask import Flask
 
-# Configurazione del mini-server per soddisfare Render
+# --- MINI-SERVER PER MANTENERE APERTA LA PORTA SU RENDER ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running!", 200
+    return "Traders B (H4/H1) is running!", 200
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+# -----------------------------------------------------------
 
 # Configurazioni Telegram
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -35,27 +36,35 @@ def send_telegram_message(message):
         print(f"Errore nell'invio del messaggio Telegram: {e}")
 
 def trading_strategy():
-    print("Analisi di mercato in corso...")
-    # Qui inserisci la logica della strategia
+    print("Analisi multitimeframe (H4 + H1) per Traders B in corso...")
+    
+    # --- LOGICA SPECIFICA TRADERS B ---
+    # Qui andranno i tuoi controlli incrociati tra H4 (struttura) e H1 (entry)
     setup_trovato = False 
     
     if setup_trovato:
-        messaggio = "📈 *SEGNALE DI TRADING* 📈\nCondizioni soddisfatte!"
+        messaggio = (
+            f"📊 *TRADERS B - H4/H1 SIGNAL* 📊\n\n"
+            f"🪙 *Asset:* XAUUSD\n"
+            f"⏱ *Timeframe:* H4 (Struttura) + H1 (Entry)\n"
+            f"Condizioni di mercato soddisfatte!"
+        )
         send_telegram_message(messaggio)
 
 if __name__ == "__main__":
-    # Avvia il mini-server Flask in un thread separato per tenere aperta la porta
+    # Avvia il mini-server Flask in un thread separato
     t = Thread(target=run_web)
     t.daemon = True
     t.start()
     
-    print("Bot avviato in modalità autonoma con supporto Web.")
+    print("Traders B avviato in modalità autonoma (H4/H1).")
     
-    # Ciclo continuo 24/7 in background
+    # Ciclo continuo 24/7
     while True:
         try:
             trading_strategy()
         except Exception as e:
             print(f"Errore nel ciclo: {e}")
         
+        # Pausa di sicurezza (60 secondi)
         time.sleep(60)
