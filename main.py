@@ -1,8 +1,21 @@
 import time
 import requests
 import os
+from threading import Thread
+from flask import Flask
 
-# Configurazioni Telegram (prelevate dalle variabili d'ambiente di Render)
+# Configurazione del mini-server per soddisfare Render
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!", 200
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# Configurazioni Telegram
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -17,46 +30,32 @@ def send_telegram_message(message):
         "parse_mode": "Markdown"
     }
     try:
-        response = requests.post(url, json=payload)
-        return response.json()
+        requests.post(url, json=payload)
     except Exception as e:
         print(f"Errore nell'invio del messaggio Telegram: {e}")
 
-def get_xauusd_price():
-    # Qui inseriamo la chiamata API per prelevare il prezzo in tempo reale di XAUUSD
-    # (es. Yahoo Finance o altra fonte dati pubblica in sola lettura)
-    pass
-
-def analyze_market_and_trade():
-    print("Analisi di mercato XAUUSD in corso...")
-    
-    # -------- INSERISCI QUI LA TUA LOGICA DI STRATEGIA --------
-    # Esempio fittizio di condizione di setup trovata:
+def trading_strategy():
+    print("Analisi di mercato in corso...")
+    # Qui inserisci la logica della strategia
     setup_trovato = False 
     
     if setup_trovato:
-        entry_price = 4390.50
-        stop_loss = 4385.00
-        tp1 = 4400.00
-        tp2 = 4410.00
-        
-        messaggio = (
-            f"🚨 *SEGNALE XAUUSD (H4/H1)* 🚨\n\n"
-            f"📍 *Entrata:* {entry_price}\n"
-            f"🛑 *Stop Loss:* {stop_loss}\n"
-            f"🎯 *Take Profit 1:* {tp1}\n"
-            f"🎯 *Take Profit 2:* {tp2}"
-        )
+        messaggio = "📈 *SEGNALE DI TRADING* 📈\nCondizioni soddisfatte!"
         send_telegram_message(messaggio)
 
-# Ciclo continuo 24/7 in background
 if __name__ == "__main__":
-    print("Bot avviato in modalità autonoma.")
+    # Avvia il mini-server Flask in un thread separato per tenere aperta la porta
+    t = Thread(target=run_web)
+    t.daemon = True
+    t.start()
+    
+    print("Bot avviato in modalità autonoma con supporto Web.")
+    
+    # Ciclo continuo 24/7 in background
     while True:
         try:
-            analyze_market_and_trade()
+            trading_strategy()
         except Exception as e:
-            print(f"Errore nel ciclo principale: {e}")
+            print(f"Errore nel ciclo: {e}")
         
-        # Pausa di 60 secondi prima del prossimo controllo (puoi regolarla)
         time.sleep(60)
