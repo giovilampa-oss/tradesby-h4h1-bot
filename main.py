@@ -26,19 +26,19 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "TUO_TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "TUO_CHAT_ID")
 TWELVE_DATA_KEY = os.environ.get("TWELVE_DATA_KEY", "TUO_TWELVE_DATA_KEY")
 
-# Dizionario dei simboli monitorati con i rispettivi ticker esatti per Twelve Data
+# Mappa degli asset con i rispettivi timeframe dedicati in base alle regole del PDF:
+# - H4 utilizza esecuzione M15 o M30
+# - H1 utilizza esecuzione M5 o M15
 SYMBOLS_MAP = {
-    "Oro": "XAU/USD",
-    "Nasdaq": "IXIC",         # Oppure NDX a seconda del feed, IXIC è l'indice NASDAQ Composite
-    "Bitcoin": "BTC/USD",
-    "S&P 500": "SPX"          # Oppure GSPC
+    "Oro":     {"ticker": "XAU/USD", "base_tf": "4h", "exec_tf": "30min"},
+    "Nasdaq":  {"ticker": "NDX",     "base_tf": "1h", "exec_tf": "5min"},
+    "Bitcoin": {"ticker": "BTC/USD", "base_tf": "4h", "exec_tf": "15min"},
+    "S&P 500": {"ticker": "SPX",     "base_tf": "1h", "exec_tf": "15min"}
 }
 
-BASE_TF = "4h"       # Timeframe di riferimento per la struttura
-EXEC_TF = "15min"    # Timeframe di esecuzione
 CHECK_INTERVAL = 900  # Controllo ogni 15 minuti
 
-# Dizionario per tracciare lo stato e la posizione di ogni singolo strumento in modo indipendente
+# Dizionario per tracciare lo stato e la posizione di ogni singolo strumento
 active_trades = {
     name: {
         "open": False,
@@ -70,13 +70,13 @@ def send_telegram_message(message):
     return None
 
 def get_candles(ticker, tf, outputsize=50):
-    """Recupera le candele storiche da Twelve Data per un dato ticker e timeframe con indicatore ATR"""
+    """Recupera le candele storiche da Twelve Data con indicatore ATR"""
     url = f"https://api.twelvedata.com/time_series?symbol={ticker}&interval={tf}&outputsize={outputsize}&apikey={TWELVE_DATA_KEY}&indicators=atr(timeperiod=14)"
     try:
         res = requests.get(url, timeout=10).json()
         if "values" in res:
             data = res["values"]
-            data.reverse()  # Ordine cronologico (dalla più vecchia alla più recente)
+            data.reverse()  # Ordine cronologico
             return data
         else:
             print(f"Risposta Twelve Data non valida per {ticker}: {res}")
@@ -87,11 +87,15 @@ def get_candles(ticker, tf, outputsize=50):
 # ---------------------------------------------------------
 # LOGICA STRATEGIA V2 PER SINGOLO SIMBOLO
 # ---------------------------------------------------------
-def evaluate_symbol(friendly_name, ticker):
+def evaluate_symbol(friendly_name, config):
     global active_trades, last_analyzed_candle
 
-    base_candles = get_candles(ticker, BASE_TF, outputsize=30)
-    exec_candles = get_candles(ticker, EXEC_TF, outputsize=30)
+    ticker = config["ticker"]
+    base_tf = config["base_tf"]
+    exec_tf = config["exec_tf"]
+
+    base_candles = get_candles(ticker, base_tf, outputsize=30)
+    exec_candles = get_candles(ticker, exec_tf, outputsize=30)
 
     if not base_candles or not exec_candles or len(base_candles) < 10 or len(exec_candles) < 10:
         return
@@ -151,10 +155,16 @@ def evaluate_symbol(friendly_name, ticker):
 
     # --- SETUP LONG (Trend Rialzista) ---
     is_correction_long = low_p < broken_high
+    
+    # Conferme: Engulfing oppure Rifiuto (Wick rejection inferiore > 50%)
     is_bullish_engulfing = (close_p > open_p) and (body_size > candle_range * 0.5) and (close_p > float(prev_exec['high']))
+    lower_wick = min(open_p, close_p) - low_p
+    is_bullish_rejection = (lower_wick / candle_range > 0.5) and (close_p > open_p)
 
-    if is_correction_long and is_bullish_engulfing:
+    if is_correction_long and (is_bullish_engulfing or is_bullish_rejection):
         last_analyzed_candle[friendly_name] = current_time
+        pattern_type = "Engulfing Rialzista" if is_bullish_engulfing else "Rifiuto (Wick)"
+        
         sl = round(float(exec_candles[-2]['low']) - (0.5 * atr), 2)
         tp = round(broken_high + (broken_high - sl), 2)
         
@@ -170,7 +180,8 @@ def evaluate_symbol(friendly_name, ticker):
         msg = (
             f"⚡ **TRADESBY V2 - SEGNALE LONG** ⚡\n\n"
             f"🪙 **Strumento:** {friendly_name} ({ticker})\n"
-            f"📊 **TF Base/Exec:** {BASE_TF} / {EXEC_TF}\n"
+            f"📊 **TF Base/Exec:** {base_tf} / {exec_tf}\n"
+            f"🕯️ **Conferma:** {pattern_type}\n"
             f"💵 **Entrata:** `{close_p}`\n"
             f"🛑 **Stop Loss:** `{sl}`\n"
             f"🎯 **Take Profit:** `{tp}`\n"
@@ -182,10 +193,16 @@ def evaluate_symbol(friendly_name, ticker):
 
     # --- SETUP SHORT (Trend Ribassista) ---
     is_correction_short = high_p > broken_low
+    
+    # Conferme: Engulfing oppure Rifiuto (Wick rejection superiore > 50%)
     is_bearish_engulfing = (close_p < open_p) and (body_size > candle_range * 0.5) and (close_p < float(prev_exec['low']))
+    upper_wick = high_p - max(open_p, close_p)
+    is_bearish_rejection = (upper_wick / candle_range > 0.5) and (close_p < open_p)
 
-    if is_correction_short and is_bearish_engulfing:
+    if is_correction_short and (is_bearish_engulfing or is_bearish_rejection):
         last_analyzed_candle[friendly_name] = current_time
+        pattern_type = "Engulfing Ribassista" if is_bearish_engulfing else "Rifiuto (Wick)"
+        
         sl = round(float(exec_candles[-2]['high']) + (0.5 * atr), 2)
         tp = round(broken_low - (sl - broken_low), 2)
 
@@ -201,7 +218,8 @@ def evaluate_symbol(friendly_name, ticker):
         msg = (
             f"⚡ **TRADESBY V2 - SEGNALE SHORT** ⚡\n\n"
             f"🪙 **Strumento:** {friendly_name} ({ticker})\n"
-            f"📊 **TF Base/Exec:** {BASE_TF} / {EXEC_TF}\n"
+            f"📊 **TF Base/Exec:** {base_tf} / {exec_tf}\n"
+            f"🕯️ **Conferma:** {pattern_type}\n"
             f"💵 **Entrata:** `{close_p}`\n"
             f"🛑 **Stop Loss:** `{sl}`\n"
             f"🎯 **Take Profit:** `{tp}`\n"
@@ -216,15 +234,15 @@ def evaluate_symbol(friendly_name, ticker):
 # ---------------------------------------------------------
 def main_loop():
     print("🚀 Tradesby Multi-Asset Strategy V2 Bot Avviato con successo!")
-    send_telegram_message("⚡ **Tradesby Multi-Asset Strategy V2 Bot Attivo e Operativo su Oro, Nasdaq, Bitcoin e S&P 500!** 🚀")
+    send_telegram_message("⚡ **Tradesby Multi-Asset Strategy V2 Bot Attivo e Operativo con Regole PDF Dinamiche!** 🚀")
     
     while True:
-        for friendly_name, ticker in SYMBOLS_MAP.items():
+        for friendly_name, config in SYMBOLS_MAP.items():
             try:
-                evaluate_symbol(friendly_name, ticker)
+                evaluate_symbol(friendly_name, config)
             except Exception as e:
                 print(f"Errore critico nel loop per lo strumento {friendly_name}: {e}")
-            time.sleep(2) # Pausa breve tra una richiesta e l'altra per rispettare i limiti API di Twelve Data
+            time.sleep(2) # Pausa breve tra le richieste per rispettare i limiti di Twelve Data
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
@@ -232,6 +250,6 @@ if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
-
+           
     # Avvio del ciclo principale di analisi dei mercati
     main_loop()
