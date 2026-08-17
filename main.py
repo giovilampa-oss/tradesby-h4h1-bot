@@ -36,7 +36,7 @@ SYMBOLS_MAP = {
 
 BASE_TF = "4h"       # Timeframe di riferimento per la struttura
 EXEC_TF = "15min"    # Timeframe di esecuzione
-CHECK_INTERVAL = 60  # Controllo ogni 60 secondi
+CHECK_INTERVAL = 900  # Controllo ogni 15 minuti
 
 # Dizionario per tracciare lo stato e la posizione di ogni singolo strumento in modo indipendente
 active_trades = {
