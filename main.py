@@ -242,7 +242,7 @@ def main_loop():
                 evaluate_symbol(friendly_name, config)
             except Exception as e:
                 print(f"Errore critico nel loop per lo strumento {friendly_name}: {e}")
-            time.sleep(2) # Pausa breve tra le richieste per rispettare i limiti di Twelve Data
+            time.sleep(15) # Pausa breve tra le richieste per rispettare i limiti di Twelve Data
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
