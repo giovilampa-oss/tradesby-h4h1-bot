@@ -250,6 +250,10 @@ if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
-           
+
+    # Sfasamento temporale iniziale di 30 secondi
+    print("Bot avviato. Attendo 30 secondi prima di iniziare il loop...")
+    time.sleep(30)
+
     # Avvio del ciclo principale di analisi dei mercati
     main_loop()
