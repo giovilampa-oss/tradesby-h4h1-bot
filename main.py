@@ -165,9 +165,12 @@ def evaluate_symbol(friendly_name, config):
         last_analyzed_candle[friendly_name] = current_time
         pattern_type = "Engulfing Rialzista" if is_bullish_engulfing else "Rifiuto (Wick)"
         
-        sl = round(float(exec_candles[-2]['low']) - (0.5 * atr), 2)
-        tp = round(broken_high + (broken_high - sl), 2)
-        
+   recent_lows = [float(c['low']) for c in exec_candles[-11:-1]]
+        swing_low = min(recent_lows)
+        sl = round(swing_low - (0.1 * atr), 2)
+        risk = close_p - sl
+        tp = round(close_p + (risk * 2.0), 2)
+
         active_trades[friendly_name] = {
             "open": True,
             "type": "LONG",
@@ -203,10 +206,12 @@ def evaluate_symbol(friendly_name, config):
         last_analyzed_candle[friendly_name] = current_time
         pattern_type = "Engulfing Ribassista" if is_bearish_engulfing else "Rifiuto (Wick)"
         
-        sl = round(float(exec_candles[-2]['high']) + (0.5 * atr), 2)
-        tp = round(broken_low - (sl - broken_low), 2)
-
-        active_trades[friendly_name] = {
+      recent_highs = [float(c['high']) for c in exec_candles[-11:-1]]
+        swing_high = max(recent_highs)
+        sl = round(swing_high + (0.1 * atr), 2)
+        risk = sl - close_p
+        tp = round(close_p - (risk * 2.0), 2)
+active_trades[friendly_name] = {
             "open": True,
             "type": "SHORT",
             "entry_price": close_p,
