@@ -206,12 +206,12 @@ def evaluate_symbol(friendly_name, config):
         last_analyzed_candle[friendly_name] = current_time
         pattern_type = "Engulfing Ribassista" if is_bearish_engulfing else "Rifiuto (Wick)"
         
-      recent_highs = [float(c['high']) for c in exec_candles[-11:-1]]
+        recent_highs = [float(c['high']) for c in exec_candles[-11:-1]]
         swing_high = max(recent_highs)
         sl = round(swing_high + (0.1 * atr), 2)
         risk = sl - close_p
         tp = round(close_p - (risk * 2.0), 2)
-active_trades[friendly_name] = {
+        active_trades[friendly_name] = {
             "open": True,
             "type": "SHORT",
             "entry_price": close_p,
