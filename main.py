@@ -165,7 +165,7 @@ def evaluate_symbol(friendly_name, config):
         last_analyzed_candle[friendly_name] = current_time
         pattern_type = "Engulfing Rialzista" if is_bullish_engulfing else "Rifiuto (Wick)"
         
-   recent_lows = [float(c['low']) for c in exec_candles[-11:-1]]
+        recent_lows = [float(c['low']) for c in exec_candles[-11:-1]]
         swing_low = min(recent_lows)
         sl = round(swing_low - (0.1 * atr), 2)
         risk = close_p - sl
